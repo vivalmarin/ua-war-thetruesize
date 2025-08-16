@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Перетаскиваемые и поворачиваемые области</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+   
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    body, html, #root {
+      margin: 0; padding: 0; height: 100%;
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: white;
+      display: flex; flex-direction: column;
+    }
+    #map {
+      flex: 1;
+    }
+    header {
+      padding: 8px 12px;
+      background: #0f172a;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .message {
+      margin-left: auto;
+      font-weight: normal;
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+    .leaflet-interactive {
+      /* Курсор при наведении */
+      cursor: pointer;
+    }
+    .dragging-polygon .leaflet-interactive {
+      /* Курсор во время перетаскивания */
+      cursor: grabbing !important;
+    }
+    .rotating-polygon .leaflet-interactive {
+      /* Курсор во время вращения - круглая стрелка с жирным черным контуром */
+      cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" stroke="black" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 3v5h-5" stroke="black" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 3v5h-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>') 12 12, crosshair !important;
+    }
+    .rotation-center {
+      background: rgba(255, 215, 0, 0.8);
+      border: 2px solid #0057b7;
+      border-radius: 50%;
+      width: 12px;
+      height: 12px;
+      margin: -6px 0 0 -6px;
+      pointer-events: none;
+      z-index: 1000;
+    }
+    .rotation-center::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 4px;
+      height: 4px;
+      background: #0057b7;
+      border-radius: 50%;
+    }
+    .polygon-shadow {
+      opacity: 0.3 !important;
+      fill-opacity: 0.1 !important;
+      stroke-dasharray: 5,5;
+    }
+    .rotation-info {
+      position: absolute;
+      top: 60px;
+      left: 12px;
+      background: rgba(15, 23, 42, 0.9);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      border: 1px solid rgba(255, 215, 0, 0.3);
+      z-index: 1000;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useRef, useState } = React;
+
+    function DeepStateMap() {
+      const mapRef = useRef(null);
+      const polygonLayerRef = useRef(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [featuresCount, setFeaturesCount] = useState(0);
+      const [isRotating, setIsRotating] = useState(false);
+      const [rotationAngle, setRotationAngle] = useState(0);
+
+      const draggingRef = useRef(false);
+      const rotatingRef = useRef(false);
+      const startLatLngRef = useRef(null);
+      const polygonCenterRef = useRef(null);
+      const startAngleRef = useRef(0);
+      const totalRotationRef = useRef(0);
+      const absoluteRotationRef = useRef(0); // Абсолютный угол поворота
+      const centerMarkerRef = useRef(null);
+      const shadowPolygonRef = useRef(null);
+
+      // Функция для вычисления центра полигона
+      const calculatePolygonCenter = (latlngs) => {
+        const flattenLatLngs = (coords) => {
+          let result = [];
+          if (Array.isArray(coords)) {
+            coords.forEach(coord => {
+              if (coord.lat !== undefined && coord.lng !== undefined) {
+                result.push(coord);
+              } else if (Array.isArray(coord)) {
+                result.push(...flattenLatLngs(coord));
+              }
+            });
+          }
+          return result;
+        };
+
+        const points = flattenLatLngs(latlngs);
+        if (points.length === 0) return { lat: 0, lng: 0 };
+
+        const sumLat = points.reduce((sum, point) => sum + point.lat, 0);
+        const sumLng = points.reduce((sum, point) => sum + point.lng, 0);
+
+        return {
+          lat: sumLat / points.length,
+          lng: sumLng / points.length
+        };
+      };
+
+      // Функция для вычисления угла от центра к точке с учетом метрической проекции
+      const calculateAngle = (center, point) => {
+        const metersPerDegreeLat = 111320;
+        const metersPerDegreeLng = 111320 * Math.cos(center.lat * Math.PI / 180);
+        
+        // Преобразуем в метры для корректного вычисления угла
+        const xMeters = (point.lng - center.lng) * metersPerDegreeLng;
+        const yMeters = (point.lat - center.lat) * metersPerDegreeLat;
+        
+        return Math.atan2(xMeters, yMeters);
+      };
+
+      // Функция для поворота точки вокруг центра с сохранением пропорций
+      const rotatePoint = (point, center, angleRad) => {
+        // Приблизительное преобразование в метры на данной широте
+        const metersPerDegreeLat = 111320; // метров на градус широты (константа)
+        const metersPerDegreeLng = 111320 * Math.cos(center.lat * Math.PI / 180); // зависит от широты
+        
+        // Преобразуем координаты в метры относительно центра
+        const xMeters = (point.lng - center.lng) * metersPerDegreeLng;
+        const yMeters = (point.lat - center.lat) * metersPerDegreeLat;
+        
+        // Поворот в метрической системе координат
+        const cos = Math.cos(angleRad);
+        const sin = Math.sin(angleRad);
+        
+        const xRotated = xMeters * cos - yMeters * sin;
+        const yRotated = xMeters * sin + yMeters * cos;
+        
+        // Обратное преобразование в географические координаты
+        return window.L.latLng(
+          center.lat + yRotated / metersPerDegreeLat,
+          center.lng + xRotated / metersPerDegreeLng
+        );
+      };
+
+      useEffect(() => {
+        const L = window.L;
+        if (!L) return;
+
+        const map = L.map("map").setView([49.0, 31.0], 6);
+        mapRef.current = map;
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution: "&copy; OpenStreetMap contributors",
+        }).addTo(map);
+
+        fetch("https://deepstatemap.live/api/history/last")
+          .then((res) => {
+            if (!res.ok) throw new Error("Ошибка загрузки данных");
+            return res.json();
+          })
+          .then((data) => {
+            if (!data.map || !data.map.features) {
+              throw new Error("Данные GeoJSON не найдены");
+            }
+
+            const allFeatures = data.map.features;
+            const filteredFeatures = allFeatures.filter(feature => {
+              const name = feature.properties.name || '';
+              return name.includes('Окупований Крим') ||
+                     name.includes('Окуповано') ||
+                     name.includes('ОРДЛО');
+            });
+
+            setFeaturesCount(filteredFeatures.length);
+
+            const allCoords = [];
+            filteredFeatures.forEach(feature => {
+              if (feature.geometry.type === "Polygon") {
+                allCoords.push(feature.geometry.coordinates);
+              } else if (feature.geometry.type === "MultiPolygon") {
+                allCoords.push(...feature.geometry.coordinates);
+              }
+            });
+
+            if (polygonLayerRef.current) {
+              polygonLayerRef.current.remove();
+            }
+
+            polygonLayerRef.current = L.polygon(allCoords.map(ring =>
+              ring[0].map(([lng, lat]) => [lat, lng])
+            ), {
+              color: "#0057b7",
+              weight: 2,
+              fillColor: "#ffd700",
+              fillOpacity: 0.4,
+            }).addTo(map);
+
+            // Обработчики перетаскивания и вращения
+            polygonLayerRef.current.on("mousedown", function (e) {
+              const isRotating = e.originalEvent.ctrlKey;
+              
+              if (isRotating) {
+                rotatingRef.current = true;
+                const latlngs = polygonLayerRef.current.getLatLngs();
+                polygonCenterRef.current = calculatePolygonCenter(latlngs);
+                startAngleRef.current = calculateAngle(polygonCenterRef.current, e.latlng);
+                totalRotationRef.current = 0;
+                
+                // Создаем тень оригинального положения
+                if (shadowPolygonRef.current) {
+                  shadowPolygonRef.current.remove();
+                }
+                shadowPolygonRef.current = L.polygon(latlngs, {
+                  color: "#0057b7",
+                  weight: 1,
+                  fillColor: "#ffd700",
+                  fillOpacity: 0.1,
+                  className: 'polygon-shadow'
+                }).addTo(map);
+                
+                // Показываем центр вращения
+                if (centerMarkerRef.current) {
+                  centerMarkerRef.current.remove();
+                }
+                centerMarkerRef.current = L.divIcon({
+                  className: 'rotation-center',
+                  iconSize: [12, 12],
+                  iconAnchor: [6, 6]
+                });
+                centerMarkerRef.current = L.marker([polygonCenterRef.current.lat, polygonCenterRef.current.lng], {
+                  icon: L.divIcon({
+                    className: 'rotation-center',
+                    iconSize: [12, 12],
+                    iconAnchor: [6, 6]
+                  })
+                }).addTo(map);
+                
+                setIsRotating(true);
+                const currentAbsoluteAngle = (absoluteRotationRef.current * 180 / Math.PI) % 360;
+                setRotationAngle(Math.round(currentAbsoluteAngle < 0 ? currentAbsoluteAngle + 360 : currentAbsoluteAngle));
+                
+                L.DomUtil.addClass(mapRef.current.getContainer(), 'rotating-polygon');
+                map.on("mousemove", onRotateMove);
+                map.on("mouseup", onRotateUp);
+              } else {
+                draggingRef.current = true;
+                startLatLngRef.current = e.latlng;
+                
+                L.DomUtil.addClass(mapRef.current.getContainer(), 'dragging-polygon');
+                map.on("mousemove", onDragMove);
+                map.on("mouseup", onDragUp);
+              }
+
+              map.dragging.disable();
+              L.DomEvent.stop(e);
+            });
+
+            const bounds = polygonLayerRef.current.getBounds();
+            if (bounds.isValid()) {
+              map.fitBounds(bounds);
+            }
+
+            setLoading(false);
+          })
+          .catch((err) => {
+            setError(err.message);
+            setLoading(false);
+          });
+
+        // Функция перетаскивания
+        function onDragMove(e) {
+          if (!draggingRef.current || !polygonLayerRef.current) return;
+
+          const start = startLatLngRef.current;
+          const deltaLat = e.latlng.lat - start.lat;
+          const deltaLng = e.latlng.lng - start.lng;
+
+          const latlngs = polygonLayerRef.current.getLatLngs();
+
+          const updateLatLngs = (coords) => {
+            if (Array.isArray(coords)) {
+              return coords.map(updateLatLngs);
+            }
+            return L.latLng(coords.lat + deltaLat, coords.lng + deltaLng);
+          };
+
+          polygonLayerRef.current.setLatLngs(updateLatLngs(latlngs));
+          startLatLngRef.current = e.latlng;
+        }
+
+        // Функция вращения
+        function onRotateMove(e) {
+          if (!rotatingRef.current || !polygonLayerRef.current) return;
+
+          const center = polygonCenterRef.current;
+          const currentAngle = calculateAngle(center, e.latlng);
+          const angleChange = -(currentAngle - startAngleRef.current); // Инвертируем направление
+          
+          // Обновляем абсолютный угол поворота
+          absoluteRotationRef.current += angleChange;
+          const degrees = (absoluteRotationRef.current * 180 / Math.PI) % 360;
+          const normalizedDegrees = degrees < 0 ? degrees + 360 : degrees;
+          setRotationAngle(Math.round(normalizedDegrees));
+
+          const latlngs = polygonLayerRef.current.getLatLngs();
+
+          const rotateLatLngs = (coords) => {
+            if (Array.isArray(coords)) {
+              return coords.map(rotateLatLngs);
+            }
+            return rotatePoint(coords, center, angleChange);
+          };
+
+          polygonLayerRef.current.setLatLngs(rotateLatLngs(latlngs));
+          startAngleRef.current = currentAngle;
+        }
+
+        // Завершение перетаскивания
+        function onDragUp() {
+          if (!draggingRef.current) return;
+          
+          L.DomUtil.removeClass(mapRef.current.getContainer(), 'dragging-polygon');
+          draggingRef.current = false;
+          map.dragging.enable();
+          map.off("mousemove", onDragMove);
+          map.off("mouseup", onDragUp);
+        }
+
+        // Завершение вращения
+        function onRotateUp() {
+          if (!rotatingRef.current) return;
+          
+          // Убираем визуальные элементы
+          if (centerMarkerRef.current) {
+            centerMarkerRef.current.remove();
+            centerMarkerRef.current = null;
+          }
+          if (shadowPolygonRef.current) {
+            shadowPolygonRef.current.remove();
+            shadowPolygonRef.current = null;
+          }
+          
+          L.DomUtil.removeClass(mapRef.current.getContainer(), 'rotating-polygon');
+          rotatingRef.current = false;
+          setIsRotating(false);
+          // Не сбрасываем absoluteRotationRef.current - оставляем накопленный угол
+          map.dragging.enable();
+          map.off("mousemove", onRotateMove);
+          map.off("mouseup", onRotateUp);
+        }
+
+        return () => {
+          map.remove();
+        };
+      }, []);
+
+      return (
+        <>
+          <header>
+            Карта с контурами deepstatemap.live
+            <span className="message">
+              {loading && "Загрузка данных..."}
+              {error && `Ошибка: ${error}`}
+              {!loading && !error && `Областей загружено: ${featuresCount} | ЛКМ - перетащить, Ctrl+ЛКМ - повернуть`}
+            </span>
+          </header>
+          {isRotating && (
+            <div className="rotation-info">
+              Абсолютный угол: {rotationAngle}°
+            </div>
+          )}
+          <div id="map"></div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<DeepStateMap />);
+  </script>
+</body>
+</html>
