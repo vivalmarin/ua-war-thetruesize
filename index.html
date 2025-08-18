@@ -2,9 +2,10 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
+  <meta name="description" content="Drag and drop the contour of the occupied territories around the map to compare their relative size. You may be surprised to find that their area is comparable to the size of an entire country." />
   <title>Перетаскиваемые и поворачиваемые области</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-   
+
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -397,13 +398,14 @@
       return (
         <>
           <header>
-            Карта с контурами deepstatemap.live
-            <span className="message">
-              {loading && "Загрузка данных..."}
-              {error && `Ошибка: ${error}`}
-              {!loading && !error && `Областей загружено: ${featuresCount} | ЛКМ - перетащить, Ctrl+ЛКМ - повернуть`}
-            </span>
-          </header>
+  Map with occupied territories in Ukraine
+  <span className="message">
+    {loading && "Loading data..."}
+    {error && `Error: ${error}`}
+    {!loading && !error && `Areas loaded: ${featuresCount} | LMB - drag, Ctrl+LMB - rotate`}
+  </span>
+  <a href="disclaimer.html" style={{ marginLeft: '12px', color: 'white', textDecoration: 'none', fontWeight: 'normal' }}>Disclaimer</a>
+</header>
           {isRotating && (
             <div className="rotation-info">
               Абсолютный угол: {rotationAngle}°
